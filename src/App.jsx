@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import {
   Compass, Target, GraduationCap, Sparkles, ArrowRight, ArrowLeft,
   Sprout, TrendingUp, SlidersHorizontal, AlertTriangle, Check,
-  Lightbulb, ShieldCheck, Info, Wifi, WifiOff, Wallet, Plus, X, Coins,
+  Lightbulb, ShieldCheck, Info, Wifi, WifiOff, Wallet, Plus, X, Coins, Pencil,
 } from "lucide-react";
 
 /* ---------- design tokens ---------- */
@@ -136,7 +136,7 @@ const HOLDINGS_SEED = [
    live through one CORS-safe endpoint — including Ibovespa and IFIX.
    Left empty, the app hits the keyless public sources directly (BCB + AwesomeAPI),
    which cover CDI/Selic/IPCA/USD/BTC but not the B3 indices.                      */
-const USE_BACKEND = true;  // consome /api/market (Cloudflare Function). Deixe false só p/ testar sem backend.
+const USE_BACKEND = true;  // consome /api/market (Cloudflare Worker). Deixe false só p/ testar sem backend.
 const API_BASE = "";       // "" = mesmo domínio (Cloudflare Pages). Ou a URL completa do backend.
 const DEFAULTS = { cdi: 0.149, selic: 15.0, ipca: 4.6, usd12: null, btc12: null, ibov12: null, ifix12: null };
 
@@ -307,10 +307,15 @@ function Field({ label, prefix, value, onChange, step = 100 }) {
 }
 
 /* ---------- screens ---------- */
-function PillarScreen({ onPick, stats }) {
+function PillarScreen({ onPick, stats, onCancel }) {
   return (
     <div style={{ padding: "8px 20px 20px" }}>
-      <p style={{ fontSize: 22, fontWeight: 600, color: T.ink, margin: "12px 0 4px", letterSpacing: -0.3 }}>Onde você está hoje?</p>
+      {onCancel && (
+        <button onClick={onCancel} style={{ background: "none", border: "none", cursor: "pointer", color: T.muted, display: "flex", alignItems: "center", gap: 4, fontSize: 13, padding: "8px 0" }}>
+          <ArrowLeft size={16} /> Voltar
+        </button>
+      )}
+      <p style={{ fontSize: 22, fontWeight: 600, color: T.ink, margin: "6px 0 4px", letterSpacing: -0.3 }}>Onde você está hoje?</p>
       <p style={{ fontSize: 14, color: T.inkSoft, margin: "0 0 20px", lineHeight: 1.5 }}>
         Isso define como o Norte fala com você — quanto explica, quantas opções mostra. Dá pra mudar depois.
       </p>
@@ -340,11 +345,10 @@ function PillarScreen({ onPick, stats }) {
 function GoalScreen({ pillar, goal, setGoal, onBack, onDone }) {
   const [g, setG] = useState(goal);
   const set = (k) => (v) => setG({ ...g, [k]: v });
-  const P = PILLARS[pillar];
   return (
     <div style={{ padding: "8px 20px 20px" }}>
       <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", color: T.muted, display: "flex", alignItems: "center", gap: 4, fontSize: 13, padding: "8px 0" }}>
-        <ArrowLeft size={16} /> {P.label}
+        <ArrowLeft size={16} /> Voltar
       </button>
       <p style={{ fontSize: 22, fontWeight: 600, color: T.ink, margin: "6px 0 4px", letterSpacing: -0.3 }}>Qual é a sua meta?</p>
       <p style={{ fontSize: 14, color: T.inkSoft, margin: "0 0 20px", lineHeight: 1.5 }}>
@@ -408,7 +412,7 @@ function Projection({ P0, PMT, years, target, mu }) {
   );
 }
 
-function SuggestionScreen({ pillar, goal, stats, live }) {
+function SuggestionScreen({ pillar, goal, stats, live, onEditGoal }) {
   const alloc = PILLARS[pillar].alloc;
   const port = useMemo(() => pStats(alloc, stats), [alloc, stats]);
   const [wYears, setWYears] = useState(goal.years);
@@ -428,7 +432,10 @@ function SuggestionScreen({ pillar, goal, stats, live }) {
       <div style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
           <Target size={16} color={T.inkSoft} />
-          <span style={{ fontSize: 14, fontWeight: 600, color: T.ink }}>{brl(goal.target)} em {wYears} anos</span>
+          <span style={{ fontSize: 14, fontWeight: 600, color: T.ink, flex: 1 }}>{brl(goal.target)} em {wYears} anos</span>
+          <button onClick={onEditGoal} style={{ background: "none", border: "none", cursor: "pointer", color: T.primary, display: "flex", alignItems: "center", gap: 4, fontSize: 12, padding: 0 }}>
+            <Pencil size={13} /> Editar
+          </button>
         </div>
         <div style={{ display: "flex", gap: 10 }}>
           {[["Tenho hoje", brl(goal.initial)], ["Por mês", brl(wMonthly)], ["Retorno necessário", pct(required)]].map(([l, v], i) => (
@@ -914,6 +921,7 @@ export default function App() {
   const [pillar, setPillar] = useState(null);
   const [tab, setTab] = useState("sugestao");
   const [goal, setGoal] = useState({ target: 100000, years: 5, initial: 5000, monthly: 1000 });
+  const [started, setStarted] = useState(false);
   const [holdings, setHoldings] = useState(HOLDINGS_SEED);
   const [targets] = useState(TARGET_SEED);
   const market = useMarketData();
@@ -937,18 +945,19 @@ export default function App() {
               <span style={{ fontSize: 11, fontWeight: 500 }}>{market.status === "live" ? "ao vivo" : market.status === "loading" ? "…" : "cache"}</span>
             </div>
             {flow === "app" && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, background: T.primarySoft, borderRadius: 20, padding: "4px 10px" }}>
+              <button onClick={() => setFlow("pillar")} title="Trocar perfil" style={{ display: "flex", alignItems: "center", gap: 6, background: T.primarySoft, border: "none", borderRadius: 20, padding: "5px 10px", cursor: "pointer" }}>
                 <ShieldCheck size={13} color={T.primary} />
                 <span style={{ fontSize: 12, color: T.primary, fontWeight: 600 }}>{PILLARS[pillar].label}</span>
-              </div>
+                <Pencil size={11} color={T.primary} />
+              </button>
             )}
           </div>
         </div>
 
         <div style={{ flex: 1, overflow: "auto" }}>
-          {flow === "pillar" && <PillarScreen stats={stats} onPick={(p) => { setPillar(p); setFlow("goal"); }} />}
-          {flow === "goal" && <GoalScreen pillar={pillar} goal={goal} setGoal={setGoal} onBack={() => setFlow("pillar")} onDone={() => { setFlow("app"); setTab("sugestao"); }} />}
-          {flow === "app" && tab === "sugestao" && <SuggestionScreen pillar={pillar} goal={goal} stats={stats} live={market.status === "live"} />}
+          {flow === "pillar" && <PillarScreen stats={stats} onPick={(p) => { setPillar(p); setFlow(started ? "app" : "goal"); }} onCancel={started ? () => setFlow("app") : undefined} />}
+          {flow === "goal" && <GoalScreen pillar={pillar} goal={goal} setGoal={setGoal} onBack={started ? () => setFlow("app") : () => setFlow("pillar")} onDone={() => { setFlow("app"); setTab("sugestao"); setStarted(true); }} />}
+          {flow === "app" && tab === "sugestao" && <SuggestionScreen pillar={pillar} goal={goal} stats={stats} live={market.status === "live"} onEditGoal={() => setFlow("goal")} />}
           {flow === "app" && tab === "carteira" && <CarteiraScreen holdings={holdings} setHoldings={setHoldings} targets={targets} aporteDefault={goal.monthly} />}
           {flow === "app" && tab === "dividendos" && <DividendosScreen holdings={holdings} aporteDefault={goal.monthly} cdi={market.cdi} />}
           {flow === "app" && tab === "educacao" && <EducationScreen market={market} />}
