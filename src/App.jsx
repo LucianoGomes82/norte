@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect } from "react";
 import {
   Compass, Target, GraduationCap, Sparkles, ArrowRight, ArrowLeft,
   Sprout, TrendingUp, SlidersHorizontal, AlertTriangle, Check,
-  Lightbulb, ShieldCheck, Info, Wifi, WifiOff, Wallet, Plus, X, Coins, Pencil,
+  Lightbulb, ShieldCheck, Info, Wifi, WifiOff, Wallet, Plus, X, Coins, Pencil, NotebookPen,
 } from "lucide-react";
 
 /* ---------- design tokens ---------- */
@@ -126,10 +126,34 @@ const TARGET_SEED = [
   { ticker: "Reserva", classe: "rf", weight: 0.15 },
 ];
 const HOLDINGS_SEED = [
-  { ticker: "ITSA4", classe: "acao", valor: 1076 },
-  { ticker: "BTHF11", classe: "fii", valor: 2649 },
-  { ticker: "Reserva", classe: "rf", valor: 6100 },
+  { ticker: "ITSA4", classe: "acao", setor: "Financeiro", qtd: 100, pm: 10.76, preco: 10.76 },
+  { ticker: "BTHF11", classe: "fii", setor: "Híbrido", qtd: 26, pm: 101.88, preco: 101.88 },
+  { ticker: "Reserva", classe: "rf", setor: "Liquidez", valor: 6100 },
 ];
+
+/* valor atual e investido de uma posição (aceita modelo por qtd×preço ou por valor) */
+const hv = (h) => (h.qtd != null && h.preco != null ? h.qtd * h.preco : (h.valor || 0));
+const hinv = (h) => (h.qtd != null && h.pm != null ? h.qtd * h.pm : (h.valor || 0));
+const patrimonio = (hs) => hs.reduce((s, h) => s + hv(h), 0);
+const monthlyIncome = (hs) => {
+  const fii = hs.filter((h) => h.classe === "fii").reduce((s, h) => s + hv(h), 0);
+  const acao = hs.filter((h) => h.classe === "acao").reduce((s, h) => s + hv(h), 0);
+  return (fii * 0.10 + acao * 0.055) / 12;
+};
+const fvGrow = (annualR, P0, pmtMonthly, years, growthRate) => {
+  let w = P0, pmt = pmtMonthly;
+  const m = Math.pow(1 + annualR, 1 / 12) - 1;
+  for (let y = 0; y < years; y++) { for (let k = 0; k < 12; k++) w = w * (1 + m) + pmt; pmt *= (1 + growthRate); }
+  return w;
+};
+const yearsToTarget = (M, P0, pmt, growth) => (P0 >= M ? 0 : solveYears(M, P0, pmt, growth));
+const yearsToIncome = (target, hs, pmt, growth) => {
+  const P0 = patrimonio(hs), inc0 = monthlyIncome(hs);
+  const yA = P0 > 0 ? (inc0 * 12) / P0 : 0.08;
+  if (inc0 >= target) return 0;
+  for (let t = 1; t <= 40; t++) { if (fv(growth, P0, pmt, t) * yA / 12 >= target) return t; }
+  return 99;
+};
 
 /* ---------- live market data ----------
    Set API_BASE to your deployed backend (see api/market.js) to get ALL series
@@ -193,6 +217,22 @@ function useMarketData() {
   return state;
 }
 
+/* ---------- persistência (guarda: persiste no app publicado; no-op se o storage estiver bloqueado) ---------- */
+function usePersistentState(key, initial) {
+  const [v, setV] = useState(() => {
+    try { const raw = localStorage.getItem(key); return raw != null ? JSON.parse(raw) : initial; } catch (_) { return initial; }
+  });
+  useEffect(() => { try { localStorage.setItem(key, JSON.stringify(v)); } catch (_) {} }, [key, v]);
+  return [v, setV];
+}
+
+/* ---------- diário: estilos e opções ---------- */
+const inpStyle = { border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 10px", fontSize: 13, background: T.surface, color: T.ink, outline: "none" };
+const selStyle = { border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 8px", fontSize: 13, background: T.surface, color: T.ink };
+const DIARIO_TIPOS = ["Compra", "Aporte", "Venda", "Rebalanceamento", "Marco", "Observação"];
+const EMOCOES = ["Tranquilo", "Confiante", "Empolgado", "Ansioso", "Com medo", "Impaciente", "FOMO"];
+const EMO_KIND = { "Tranquilo": "pos", "Confiante": "pos", "Empolgado": "warn", "Ansioso": "neg", "Com medo": "neg", "Impaciente": "warn", "FOMO": "neg" };
+
 /* ---------- finance math ---------- */
 function fv(annualR, P0, PMT, years) {
   const months = Math.round(years * 12);
@@ -238,8 +278,8 @@ function effectiveTargets(targets, holdings) {
 }
 function smartContribution(holdings, targets, aporte) {
   const cur = {};
-  holdings.forEach((h) => { cur[h.ticker] = (cur[h.ticker] || 0) + h.valor; });
-  const totalNow = holdings.reduce((a, h) => a + h.valor, 0);
+  holdings.forEach((h) => { cur[h.ticker] = (cur[h.ticker] || 0) + hv(h); });
+  const totalNow = holdings.reduce((a, h) => a + hv(h), 0);
   const totalAfter = totalNow + aporte;
   const rows = effectiveTargets(targets, holdings).map((t) => {
     const c = cur[t.ticker] || 0;
@@ -253,9 +293,9 @@ function smartContribution(holdings, targets, aporte) {
   return rows.map((r, i) => ({ ...r, buy: buys[i] }));
 }
 function classSummary(holdings, targets) {
-  const total = holdings.reduce((a, h) => a + h.valor, 0) || 1;
+  const total = holdings.reduce((a, h) => a + hv(h), 0) || 1;
   const cc = {}, tc = {};
-  holdings.forEach((h) => { cc[h.classe] = (cc[h.classe] || 0) + h.valor; });
+  holdings.forEach((h) => { cc[h.classe] = (cc[h.classe] || 0) + hv(h); });
   targets.forEach((t) => { tc[t.classe] = (tc[t.classe] || 0) + t.weight; });
   return ["acao", "fii", "rf"].map((c) => ({ classe: c, cur: (cc[c] || 0) / total, tgt: tc[c] || 0 }));
 }
@@ -412,7 +452,7 @@ function Projection({ P0, PMT, years, target, mu }) {
   );
 }
 
-function SuggestionScreen({ pillar, goal, stats, live, onEditGoal }) {
+function SuggestionScreen({ pillar, goal, stats, live, onEditGoal, holdings }) {
   const alloc = PILLARS[pillar].alloc;
   const port = useMemo(() => pStats(alloc, stats), [alloc, stats]);
   const [wYears, setWYears] = useState(goal.years);
@@ -426,6 +466,23 @@ function SuggestionScreen({ pillar, goal, stats, live, onEditGoal }) {
 
   const probColor = prob >= 0.7 ? T.positive : prob >= 0.45 ? T.warn : T.negative;
   const probBg = prob >= 0.7 ? T.primarySoft : prob >= 0.45 ? T.warnSoft : T.negSoft;
+
+  const cy = new Date().getFullYear();
+  const patr = patrimonio(holdings || []);
+  const reserveVal = (holdings || []).filter((h) => h.classe === "rf").reduce((s, h) => s + hv(h), 0);
+  const incNow = monthlyIncome(holdings || []);
+  const wealthMarks = [
+    { label: "Reserva de emergência", target: EMERGENCY_TARGET, cur: reserveVal, growth: stats.rf.mu, pmt: wMonthly * 0.15 },
+    { label: "R$ 100 mil", target: 100000, cur: patr, growth: port.mu, pmt: wMonthly },
+    { label: "R$ 250 mil", target: 250000, cur: patr, growth: port.mu, pmt: wMonthly },
+    { label: "R$ 500 mil", target: 500000, cur: patr, growth: port.mu, pmt: wMonthly },
+    { label: "R$ 1 milhão", target: 1000000, cur: patr, growth: port.mu, pmt: wMonthly },
+  ];
+  const incomeMarks = [{ label: "Renda R$ 1 mil/mês", target: 1000 }, { label: "Renda R$ 3 mil/mês", target: 3000 }, { label: "Renda R$ 5 mil/mês", target: 5000 }];
+  const scenarios = [
+    { label: "Atual", pmt: wMonthly, g: 0 }, { label: "+25%", pmt: wMonthly * 1.25, g: 0 },
+    { label: "+50%", pmt: wMonthly * 1.5, g: 0 }, { label: "Cresce 5%/ano", pmt: wMonthly, g: 0.05 },
+  ];
 
   return (
     <div style={{ padding: "4px 20px 20px" }}>
@@ -507,6 +564,55 @@ function SuggestionScreen({ pillar, goal, stats, live, onEditGoal }) {
           <input type="range" min={1} max={30} step={1} value={wYears} onChange={(e) => setWYears(Number(e.target.value))} style={{ width: "100%", accentColor: T.primary }} />
         </div>
       </div>
+
+      <div style={{ fontSize: 12, color: T.muted, margin: "16px 2px 8px" }}>Cenários de aporte · patrimônio em {wYears} anos</div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+        {scenarios.map((sc, i) => (
+          <div key={i} style={{ flex: 1, background: i === 0 ? T.surface : T.primarySoft, border: `1px solid ${T.line}`, borderRadius: 10, padding: "9px 5px", textAlign: "center" }}>
+            <div style={{ fontSize: 10, color: T.muted, marginBottom: 3, minHeight: 24, display: "flex", alignItems: "center", justifyContent: "center" }}>{sc.label}</div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: T.ink, fontFamily: MONO }}>{brl(fvGrow(port.mu, goal.initial, sc.pmt, wYears, sc.g))}</div>
+          </div>
+        ))}
+      </div>
+      <p style={{ fontSize: 11, color: T.muted, marginTop: 6, lineHeight: 1.5 }}>Aumentar o aporte — ou fazê-lo crescer com sua renda — muda o resultado mais do que perseguir 1% a mais de retorno.</p>
+
+      <div style={{ fontSize: 12, color: T.muted, margin: "16px 2px 8px" }}>Metas e marcos</div>
+      <div style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 14, padding: 14, marginBottom: 6 }}>
+        {wealthMarks.map((mk, i) => {
+          const prog = mk.target > 0 ? Math.min(1, mk.cur / mk.target) : 0;
+          const done = mk.cur >= mk.target;
+          const yy = done ? 0 : yearsToTarget(mk.target, mk.cur, mk.pmt, mk.growth);
+          return (
+            <div key={i} style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", fontSize: 13, marginBottom: 4 }}>
+                <span style={{ flex: 1, color: T.inkSoft }}>{mk.label}</span>
+                <span style={{ fontFamily: MONO, fontSize: 12, color: done ? T.positive : T.muted }}>{done ? "concluída" : yy >= 90 ? "além de 2043" : `~${cy + Math.ceil(yy)}`}</span>
+              </div>
+              <div style={{ height: 7, background: T.surfaceAlt, borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ width: `${prog * 100}%`, height: "100%", background: done ? T.positive : T.primary }} />
+              </div>
+            </div>
+          );
+        })}
+        <div style={{ height: 1, background: T.line, margin: "4px 0 10px" }} />
+        {incomeMarks.map((mk, i) => {
+          const prog = Math.min(1, incNow / mk.target);
+          const done = incNow >= mk.target;
+          const yy = done ? 0 : yearsToIncome(mk.target, holdings || [], wMonthly, port.mu);
+          return (
+            <div key={i} style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", fontSize: 13, marginBottom: 4 }}>
+                <span style={{ flex: 1, color: T.inkSoft }}>{mk.label}</span>
+                <span style={{ fontFamily: MONO, fontSize: 12, color: done ? T.positive : T.muted }}>{done ? "concluída" : yy >= 99 ? "além de 2043" : `~${cy + yy}`}</span>
+              </div>
+              <div style={{ height: 7, background: T.surfaceAlt, borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ width: `${prog * 100}%`, height: "100%", background: done ? T.positive : "#7F77DD" }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p style={{ fontSize: 11, color: T.muted, marginTop: 0, marginBottom: 4, lineHeight: 1.5 }}>Anos estimados pela projeção (retorno esperado da carteira, não linha fixa de 10%). Estimativa, não promessa.</p>
 
       <div style={{ fontSize: 12, color: T.muted, margin: "16px 2px 8px" }}>Exemplos de ativos deste perfil</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -599,24 +705,54 @@ function CarteiraScreen({ holdings, setHoldings, targets, aporteDefault }) {
   const [nc, setNc] = useState("acao");
   const [nv, setNv] = useState(0);
 
-  const total = holdings.reduce((s, h) => s + h.valor, 0);
+  const total = patrimonio(holdings);
   const classes = classSummary(holdings, targets);
-  const reserve = holdings.find((h) => h.classe === "rf");
-  const reserveFull = reserve && reserve.valor >= EMERGENCY_TARGET;
+  const reserveVal = holdings.filter((h) => h.classe === "rf").reduce((s, h) => s + hv(h), 0);
+  const reserveFull = reserveVal >= EMERGENCY_TARGET;
   const plan = useMemo(
     () => smartContribution(holdings, targets, aporte).filter((r) => r.buy > 0.5).sort((a, b) => b.buy - a.buy),
     [holdings, targets, aporte]
   );
 
-  const updateVal = (i, v) => setHoldings(holdings.map((h, idx) => (idx === i ? { ...h, valor: Math.max(0, v) } : h)));
+  const topHold = holdings.reduce((mx, h) => (mx == null || hv(h) > hv(mx) ? h : mx), null);
+  const topW = total > 0 && topHold ? hv(topHold) / total : 0;
+  const drift = classes.reduce((mx, c) => (Math.abs(c.cur - c.tgt) > Math.abs(mx.cur - mx.tgt) ? c : mx), classes[0] || { cur: 0, tgt: 0, classe: "acao" });
+  const alerts = [
+    topW > 0.35
+      ? { k: "neg", t: `${topHold.ticker} é ${pct(topW, 0)} da carteira — acima de 35%. Vale diversificar.` }
+      : { k: "pos", t: "Nenhum ativo passa de 35% da carteira." },
+    reserveFull
+      ? { k: "pos", t: `Reserva completa (${brl(reserveVal)}).` }
+      : { k: "warn", t: `Reserva em ${pct(reserveVal / EMERGENCY_TARGET, 0)} da meta — continue aportando.` },
+    Math.abs(drift.cur - drift.tgt) > 0.05
+      ? { k: "warn", t: `${CLASSE_META[drift.classe].label} está ${drift.cur > drift.tgt ? "acima" : "abaixo"} do alvo (${pct(drift.cur, 0)} vs ${pct(drift.tgt, 0)}).` }
+      : { k: "pos", t: "Alocação alinhada ao alvo." },
+  ];
+  const alertColor = { pos: T.primary, warn: T.warn, neg: T.negative };
+  const alertBg = { pos: T.primarySoft, warn: T.warnSoft, neg: T.negSoft };
+  const miniInp = { border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 4px", width: 50, fontFamily: MONO, fontSize: 12, color: T.ink, background: T.surface, outline: "none" };
+
+  const upd = (i, field, v) => setHoldings(holdings.map((h, idx) => (idx === i ? { ...h, [field]: Math.max(0, v) } : h)));
   const remove = (i) => setHoldings(holdings.filter((_, idx) => idx !== i));
-  const add = () => { if (!nt.trim()) return; setHoldings([...holdings, { ticker: nt.trim().toUpperCase(), classe: nc, valor: Number(nv) || 0 }]); setNt(""); setNv(0); };
+  const add = () => { if (!nt.trim()) return; setHoldings([...holdings, { ticker: nt.trim().toUpperCase(), classe: nc, setor: "", valor: Number(nv) || 0 }]); setNt(""); setNv(0); };
 
   return (
     <div style={{ padding: "4px 20px 20px" }}>
       <p style={{ fontSize: 13, color: T.inkSoft, margin: "8px 2px 14px", lineHeight: 1.5 }}>
-        Cadastre o que você já tem. O Norte compara com a sua carteira-alvo e diz para onde mandar o próximo aporte — sem escolher ativo por você, só fazendo a conta do seu plano.
+        Sua carteira, o alinhamento com o alvo e para onde vai o próximo aporte.
       </p>
+
+      <div style={{ fontSize: 12, color: T.muted, margin: "0 2px 8px" }}>Revisão da carteira</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+        {alerts.map((a, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, alignItems: "flex-start", background: alertBg[a.k], borderRadius: 10, padding: "9px 12px" }}>
+            {a.k === "pos"
+              ? <Check size={15} color={alertColor[a.k]} style={{ marginTop: 1, flexShrink: 0 }} />
+              : <AlertTriangle size={15} color={alertColor[a.k]} style={{ marginTop: 1, flexShrink: 0 }} />}
+            <span style={{ fontSize: 12, color: T.inkSoft, lineHeight: 1.45 }}>{a.t}</span>
+          </div>
+        ))}
+      </div>
 
       <div style={{ fontSize: 12, color: T.muted, margin: "0 2px 8px" }}>Atual vs. alvo</div>
       <div style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 14, padding: 14, marginBottom: 12 }}>
@@ -673,20 +809,44 @@ function CarteiraScreen({ holdings, setHoldings, targets, aporteDefault }) {
       </div>
 
       <div style={{ fontSize: 12, color: T.muted, margin: "6px 2px 8px" }}>Minha carteira</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {holdings.map((h, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, background: T.surface, border: `1px solid ${T.line}`, borderRadius: 10, padding: "8px 10px" }}>
-            <span style={{ width: 8, height: 8, borderRadius: 2, background: CLASSE_META[h.classe].color }} />
-            <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 600, color: T.ink, width: 72 }}>{h.ticker}</span>
-            <div style={{ display: "flex", alignItems: "center", background: T.surfaceAlt, borderRadius: 8, padding: "0 8px", flex: 1 }}>
-              <span style={{ fontSize: 12, color: T.muted, fontFamily: MONO }}>R$</span>
-              <input type="number" value={h.valor} step={100} onChange={(e) => updateVal(i, Number(e.target.value))}
-                style={{ border: "none", outline: "none", background: "transparent", padding: "7px 4px", width: "100%", fontFamily: MONO, fontSize: 13, color: T.ink }} />
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {holdings.map((h, i) => {
+          const qtyBased = h.qtd != null;
+          const val = hv(h);
+          const rent = qtyBased && h.pm > 0 ? h.preco / h.pm - 1 : null;
+          return (
+            <div key={i} style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 12, padding: "10px 12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: qtyBased ? 8 : 0 }}>
+                <span style={{ width: 8, height: 8, borderRadius: 2, background: CLASSE_META[h.classe].color, flexShrink: 0 }} />
+                <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 600, color: T.ink }}>{h.ticker}</span>
+                {h.setor ? <span style={{ ...chipStyle("n"), fontSize: 10, padding: "2px 7px" }}>{h.setor}</span> : null}
+                <span style={{ flex: 1 }} />
+                {qtyBased
+                  ? <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 600, color: T.ink }}>{brl(val)}</span>
+                  : (
+                    <div style={{ display: "flex", alignItems: "center", background: T.surfaceAlt, borderRadius: 8, padding: "0 8px", width: 118 }}>
+                      <span style={{ fontSize: 12, color: T.muted, fontFamily: MONO }}>R$</span>
+                      <input type="number" value={h.valor} step={100} onChange={(e) => upd(i, "valor", Number(e.target.value))}
+                        style={{ border: "none", outline: "none", background: "transparent", padding: "6px 4px", width: "100%", fontFamily: MONO, fontSize: 13, color: T.ink }} />
+                    </div>
+                  )}
+                <span style={{ fontFamily: MONO, fontSize: 11, color: T.muted, width: 32, textAlign: "right" }}>{total > 0 ? pct(val / total, 0) : "0%"}</span>
+                <button onClick={() => remove(i)} style={{ background: "none", border: "none", cursor: "pointer", color: T.muted, padding: 2, display: "flex" }}><X size={15} /></button>
+              </div>
+              {qtyBased && (
+                <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+                  <span style={{ fontSize: 10, color: T.muted }}>qtd</span>
+                  <input type="number" value={h.qtd} step={1} onChange={(e) => upd(i, "qtd", Number(e.target.value))} style={miniInp} />
+                  <span style={{ fontSize: 10, color: T.muted }}>PM</span>
+                  <input type="number" value={h.pm} step={0.5} onChange={(e) => upd(i, "pm", Number(e.target.value))} style={miniInp} />
+                  <span style={{ fontSize: 10, color: T.muted }}>preço</span>
+                  <input type="number" value={h.preco} step={0.5} onChange={(e) => upd(i, "preco", Number(e.target.value))} style={miniInp} />
+                  {rent != null && <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 600, color: rent >= 0 ? T.positive : T.negative, marginLeft: "auto" }}>{rent >= 0 ? "+" : ""}{(rent * 100).toFixed(1)}%</span>}
+                </div>
+              )}
             </div>
-            <span style={{ fontFamily: MONO, fontSize: 11, color: T.muted, width: 34, textAlign: "right" }}>{total > 0 ? pct(h.valor / total, 0) : "0%"}</span>
-            <button onClick={() => remove(i)} style={{ background: "none", border: "none", cursor: "pointer", color: T.muted, padding: 2, display: "flex" }}><X size={15} /></button>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }}>
@@ -705,7 +865,7 @@ function CarteiraScreen({ holdings, setHoldings, targets, aporteDefault }) {
       </div>
 
       <p style={{ fontSize: 11, color: T.muted, marginTop: 12, lineHeight: 1.5 }}>
-        Valores editáveis manualmente; com o backend conectado, o preço atual de cada ativo entra sozinho. Simulação educacional — não é recomendação.
+        Quantidade, preço médio e preço atual editáveis; com o backend conectado, o preço atual entra sozinho e a rentabilidade fica real. Simulação educacional — não é recomendação.
       </p>
     </div>
   );
@@ -713,12 +873,12 @@ function CarteiraScreen({ holdings, setHoldings, targets, aporteDefault }) {
 
 function DividendosScreen({ holdings, aporteDefault, cdi }) {
   const MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
-  const [log, setLog] = useState(Array(12).fill(0));
-  const [meta, setMeta] = useState(3000);
+  const [log, setLog] = usePersistentState("norte.dividendos.log", Array(12).fill(0));
+  const [meta, setMeta] = usePersistentState("norte.dividendos.meta", 3000);
 
-  const total = holdings.reduce((s, h) => s + h.valor, 0);
-  const fiiVal = holdings.filter((h) => h.classe === "fii").reduce((s, h) => s + h.valor, 0);
-  const acaoVal = holdings.filter((h) => h.classe === "acao").reduce((s, h) => s + h.valor, 0);
+  const total = holdings.reduce((s, h) => s + hv(h), 0);
+  const fiiVal = holdings.filter((h) => h.classe === "fii").reduce((s, h) => s + hv(h), 0);
+  const acaoVal = holdings.filter((h) => h.classe === "acao").reduce((s, h) => s + hv(h), 0);
   const annual = fiiVal * 0.10 + acaoVal * 0.055;
   const monthlyEst = annual / 12;
   const yoc = total > 0 ? annual / total : 0;
@@ -834,6 +994,76 @@ function DividendosScreen({ holdings, aporteDefault, cdi }) {
   );
 }
 
+function DiarioScreen({ diary, setDiary }) {
+  const [tipo, setTipo] = useState("Compra");
+  const [ativo, setAtivo] = useState("");
+  const [decisao, setDecisao] = useState("");
+  const [motivo, setMotivo] = useState("");
+  const [emocao, setEmocao] = useState("Tranquilo");
+
+  const add = () => {
+    if (!decisao.trim() && !ativo.trim()) return;
+    const entry = { id: Date.now(), data: new Date().toISOString().slice(0, 10), tipo, ativo: ativo.trim(), decisao: decisao.trim(), motivo: motivo.trim(), emocao };
+    setDiary([entry, ...diary]);
+    setAtivo(""); setDecisao(""); setMotivo("");
+  };
+  const remove = (id) => setDiary(diary.filter((e) => e.id !== id));
+  const fmt = (iso) => { const p = iso.split("-"); return `${p[2]}/${p[1]}`; };
+
+  return (
+    <div style={{ padding: "4px 20px 20px" }}>
+      <p style={{ fontSize: 13, color: T.inkSoft, margin: "8px 2px 14px", lineHeight: 1.5 }}>
+        Registre cada decisão e o porquê — inclusive como você se sentiu. Reler o motivo depois é o que evita repetir erros e decidir no impulso.
+      </p>
+
+      <div style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 14, padding: 14, marginBottom: 14 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <select value={tipo} onChange={(e) => setTipo(e.target.value)} style={selStyle}>
+            {DIARIO_TIPOS.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <input value={ativo} onChange={(e) => setAtivo(e.target.value)} placeholder="Ativo / tema" style={{ ...inpStyle, flex: 1 }} />
+        </div>
+        <input value={decisao} onChange={(e) => setDecisao(e.target.value)} placeholder="O que você decidiu ou o que aconteceu" style={{ ...inpStyle, width: "100%", marginBottom: 8 }} />
+        <textarea value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Por quê? (a razão por trás da decisão)" rows={2} style={{ ...inpStyle, width: "100%", resize: "vertical", marginBottom: 8, fontFamily: SANS }} />
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <span style={{ fontSize: 12, color: T.muted }}>Como se sentiu:</span>
+          <select value={emocao} onChange={(e) => setEmocao(e.target.value)} style={{ ...selStyle, flex: 1 }}>
+            {EMOCOES.map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+          <button onClick={add} style={{ background: T.primary, color: "#fff", border: "none", borderRadius: 8, padding: "9px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+            <Plus size={15} /> Registrar
+          </button>
+        </div>
+      </div>
+
+      {diary.length === 0 ? (
+        <p style={{ fontSize: 13, color: T.muted, textAlign: "center", padding: "20px 0" }}>Nenhum registro ainda. Comece anotando sua próxima decisão.</p>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {diary.map((e) => (
+            <div key={e.id} style={{ background: T.surface, border: `1px solid ${T.line}`, borderRadius: 12, padding: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 5 }}>
+                <span style={{ fontSize: 11, color: T.muted, fontFamily: MONO }}>{fmt(e.data)}</span>
+                <span style={chipStyle("n")}>{e.tipo}</span>
+                {e.ativo && <span style={{ fontSize: 13, fontWeight: 600, color: T.ink, fontFamily: MONO }}>{e.ativo}</span>}
+                <span style={{ flex: 1 }} />
+                <span style={chipStyle(EMO_KIND[e.emocao] || "n")}>{e.emocao}</span>
+                <button onClick={() => remove(e.id)} style={{ background: "none", border: "none", cursor: "pointer", color: T.muted, padding: 2, display: "flex" }}><X size={14} /></button>
+              </div>
+              {e.decisao && <div style={{ fontSize: 13, color: T.ink, lineHeight: 1.5 }}>{e.decisao}</div>}
+              {e.motivo && <div style={{ fontSize: 12, color: T.inkSoft, lineHeight: 1.5, marginTop: 3 }}>\u201c{e.motivo}\u201d</div>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <p style={{ fontSize: 11, color: T.muted, marginTop: 12, lineHeight: 1.5 }}>
+        Salvo neste navegador. Sincronização entre aparelhos entra quando ligarmos o backend de dados do usuário.
+      </p>
+    </div>
+  );
+}
+
 function CopilotScreen() {
   const [fixed, setFixed] = useState(false);
   return (
@@ -912,17 +1142,19 @@ const TABS = [
   { key: "sugestao", label: "Sugestão", icon: Compass },
   { key: "carteira", label: "Carteira", icon: Wallet },
   { key: "dividendos", label: "Dividendos", icon: Coins },
+  { key: "diario", label: "Diário", icon: NotebookPen },
   { key: "educacao", label: "Educação", icon: GraduationCap },
   { key: "copiloto", label: "Copiloto", icon: Sparkles },
 ];
 
 export default function App() {
-  const [flow, setFlow] = useState("pillar");
-  const [pillar, setPillar] = useState(null);
+  const [pillar, setPillar] = usePersistentState("norte.pillar", null);
+  const [goal, setGoal] = usePersistentState("norte.goal", { target: 100000, years: 5, initial: 5000, monthly: 1000 });
+  const [holdings, setHoldings] = usePersistentState("norte.holdings", HOLDINGS_SEED);
+  const [diary, setDiary] = usePersistentState("norte.diary", []);
+  const [started, setStarted] = usePersistentState("norte.started", false);
+  const [flow, setFlow] = useState(started ? "app" : "pillar");
   const [tab, setTab] = useState("sugestao");
-  const [goal, setGoal] = useState({ target: 100000, years: 5, initial: 5000, monthly: 1000 });
-  const [started, setStarted] = useState(false);
-  const [holdings, setHoldings] = useState(HOLDINGS_SEED);
   const [targets] = useState(TARGET_SEED);
   const market = useMarketData();
   const stats = useMemo(() => deriveStats(market.cdi), [market.cdi]);
@@ -957,9 +1189,10 @@ export default function App() {
         <div style={{ flex: 1, overflow: "auto" }}>
           {flow === "pillar" && <PillarScreen stats={stats} onPick={(p) => { setPillar(p); setFlow(started ? "app" : "goal"); }} onCancel={started ? () => setFlow("app") : undefined} />}
           {flow === "goal" && <GoalScreen pillar={pillar} goal={goal} setGoal={setGoal} onBack={started ? () => setFlow("app") : () => setFlow("pillar")} onDone={() => { setFlow("app"); setTab("sugestao"); setStarted(true); }} />}
-          {flow === "app" && tab === "sugestao" && <SuggestionScreen pillar={pillar} goal={goal} stats={stats} live={market.status === "live"} onEditGoal={() => setFlow("goal")} />}
+          {flow === "app" && tab === "sugestao" && <SuggestionScreen pillar={pillar} goal={goal} stats={stats} live={market.status === "live"} onEditGoal={() => setFlow("goal")} holdings={holdings} />}
           {flow === "app" && tab === "carteira" && <CarteiraScreen holdings={holdings} setHoldings={setHoldings} targets={targets} aporteDefault={goal.monthly} />}
           {flow === "app" && tab === "dividendos" && <DividendosScreen holdings={holdings} aporteDefault={goal.monthly} cdi={market.cdi} />}
+          {flow === "app" && tab === "diario" && <DiarioScreen diary={diary} setDiary={setDiary} />}
           {flow === "app" && tab === "educacao" && <EducationScreen market={market} />}
           {flow === "app" && tab === "copiloto" && <CopilotScreen />}
         </div>
